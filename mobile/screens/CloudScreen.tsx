@@ -330,7 +330,12 @@ export default function CloudScreen() {
             </Modal>
 
             {/* Settings Modal */}
-            <Modal visible={showSettings} animationType="slide" presentationStyle="pageSheet">
+            <Modal
+                visible={showSettings}
+                animationType="slide"
+                presentationStyle="overFullScreen"
+                statusBarTranslucent={true}
+            >
                 <SettingsScreen onClose={() => setShowSettings(false)} />
             </Modal>
 

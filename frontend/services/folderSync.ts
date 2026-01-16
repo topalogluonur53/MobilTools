@@ -6,6 +6,7 @@ interface SyncedFile {
     path: string;
     lastModified: number;
     uploaded: boolean;
+    fileObject?: File;
 }
 
 class FolderSyncService {
@@ -62,9 +63,17 @@ class FolderSyncService {
             input.type = 'file';
             input.multiple = true;
 
-            // webkitdirectory özelliği ile klasör seçimi (Safari destekler)
-            (input as any).webkitdirectory = true;
-            (input as any).directory = true;
+            // Mobil cihazlarda direkt medya galerisini aç
+            const isMobile = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+            if (!isMobile) {
+                // Masaüstü için klasör seçimi
+                (input as any).webkitdirectory = true;
+                (input as any).directory = true;
+            } else {
+                // Mobil için medya seçimi (Galeri erişimi için)
+                input.accept = 'image/*,video/*';
+            }
 
             input.onchange = async (e) => {
                 const files = (e.target as HTMLInputElement).files;
@@ -80,14 +89,24 @@ class FolderSyncService {
                     const file = files[i];
                     const ext = file.name.split('.').pop()?.toLowerCase();
 
-                    // Sadece medya dosyaları
-                    if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'mp4', 'mov', 'avi', 'mkv'].includes(ext || '')) {
-                        const path = (file as any).webkitRelativePath || file.name;
+                    const isPhoto = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'bmp'].includes(ext || '');
+                    const isVideo = ['mp4', 'mov', 'avi', 'mkv', 'webm', '3gp'].includes(ext || '');
+
+                    // Ayarlara göre filtrele
+                    if (isPhoto && !this.config.photos) continue;
+                    if (isVideo && !this.config.videos) continue;
+
+                    // Sadece desteklenen medya dosyaları
+                    if (isPhoto || isVideo) {
+                        // Mobilde webkitRelativePath genellikle boştur, bu yüzden benzersiz bir yol oluşturuyoruz
+                        const path = (file as any).webkitRelativePath || `mobile_upload/${Date.now()}_${file.name}`;
+
                         this.syncedFiles.set(path, {
                             name: file.name,
                             path: path,
                             lastModified: file.lastModified,
                             uploaded: false,
+                            fileObject: file // Dosya referansını sakla (önemli!)
                         });
                     }
                 }
@@ -165,6 +184,7 @@ class FolderSyncService {
     // Otomatik senkronizasyonu başlat
     async startAutoSync(
         uploadCallback: (file: File, path: string) => Promise<boolean>,
+        onProgress?: (status: any) => void,
         intervalMinutes: number = 5
     ) {
         if (this.isRunning) {
@@ -172,7 +192,7 @@ class FolderSyncService {
             return;
         }
 
-        if (!this.directoryHandle) {
+        if (!this.directoryHandle && this.syncedFiles.size === 0) {
             console.error('Önce bir klasör seçmelisiniz');
             return;
         }
@@ -181,70 +201,90 @@ class FolderSyncService {
         console.log(`Otomatik senkronizasyon başlatıldı (${intervalMinutes} dakika aralıkla)`);
 
         // İlk yüklemeyi hemen yap
-        await this.syncNewFiles(uploadCallback);
+        await this.syncNewFiles(uploadCallback, onProgress);
 
         // Periyodik kontrol başlat
         this.intervalId = setInterval(async () => {
-            await this.syncNewFiles(uploadCallback);
+            await this.syncNewFiles(uploadCallback, onProgress);
         }, intervalMinutes * 60 * 1000);
     }
 
     // Yeni dosyaları senkronize et
-    public async syncNewFiles(uploadCallback: (file: File, path: string) => Promise<boolean>) {
-        if (!this.directoryHandle) return;
+    public async syncNewFiles(
+        uploadCallback: (file: File, path: string) => Promise<boolean>,
+        onProgress?: (status: { totalFiles: number; uploadedFiles: number; failedFiles: number }) => void
+    ) {
+        // Desktop için handle veya Mobile için seçilmiş dosya listesi kontrolü
+        if (!this.directoryHandle && this.syncedFiles.size === 0) return;
 
         try {
             console.log('Yeni dosyalar kontrol ediliyor...');
 
-            // Klasörü tekrar tara
-            const currentFiles: SyncedFile[] = [];
-            await this.scanDirectory(this.directoryHandle, '', currentFiles);
+            let filesToProcess: SyncedFile[] = [];
+
+            if (this.directoryHandle) {
+                // Desktop: Klasörü tekrar tara
+                await this.scanDirectory(this.directoryHandle, '', filesToProcess);
+            } else {
+                // Mobile/Fallback: Mevcut listeyi kullan
+                filesToProcess = Array.from(this.syncedFiles.values());
+            }
 
             let uploadedCount = 0;
             let failedCount = 0;
 
-            // Yeni veya değişmiş dosyaları yükle
-            for (const fileInfo of currentFiles) {
-                const existing = this.syncedFiles.get(fileInfo.path);
+            if (onProgress) onProgress(this.getStatus());
 
-                // Yeni dosya veya değişmiş dosya
-                if (!existing || existing.lastModified !== fileInfo.lastModified) {
-                    try {
-                        // Dosyayı al
-                        const file = await this.getFile(fileInfo.path);
-                        if (!file) continue;
+            // Dosyaları yükle
+            for (const fileInfo of filesToProcess) {
+                // Desktop modunda değişiklik kontrolü
+                if (this.directoryHandle) {
+                    const existing = this.syncedFiles.get(fileInfo.path);
+                    if (existing && existing.lastModified === fileInfo.lastModified && existing.uploaded) {
+                        continue;
+                    }
+                } else {
+                    // Mobile modunda sadece yüklenmemişleri al
+                    if (fileInfo.uploaded) continue;
+                }
 
-                        const ext = file.name.split('.').pop()?.toLowerCase();
-                        const isPhoto = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'bmp', 'dng', 'arw', 'cr2', 'nef', 'orf', 'rw2', 'raf', 'tiff', 'svg'].includes(ext || '');
-                        const isVideo = ['mp4', 'mov', 'avi', 'mkv', 'webm', '3gp'].includes(ext || '');
+                try {
+                    // Dosyayı al (Mobile için fileObject, Desktop için getFile)
+                    const file = fileInfo.fileObject || await this.getFile(fileInfo.path);
+                    if (!file) continue;
 
-                        if (isPhoto && !this.config.photos) {
-                            console.log(`Skipped photo: ${file.name}`);
-                            continue;
-                        }
-                        if (isVideo && !this.config.videos) {
-                            console.log(`Skipped video: ${file.name}`);
-                            continue;
-                        }
+                    const ext = file.name.split('.').pop()?.toLowerCase();
+                    const isPhoto = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'bmp', 'dng', 'arw', 'cr2', 'nef', 'orf', 'rw2', 'raf', 'tiff', 'svg'].includes(ext || '');
+                    const isVideo = ['mp4', 'mov', 'avi', 'mkv', 'webm', '3gp'].includes(ext || '');
 
-                        // Yükle
-                        const success = await uploadCallback(file, fileInfo.path);
+                    if (isPhoto && !this.config.photos) {
+                        console.log(`Skipped photo: ${file.name}`);
+                        continue;
+                    }
+                    if (isVideo && !this.config.videos) {
+                        console.log(`Skipped video: ${file.name}`);
+                        continue;
+                    }
 
-                        if (success) {
-                            fileInfo.uploaded = true;
-                            this.syncedFiles.set(fileInfo.path, fileInfo);
-                            uploadedCount++;
-                            console.log(`✓ Yüklendi: ${fileInfo.name}`);
-                        } else {
-                            failedCount++;
-                            this.failedCount++;
-                            console.error(`✗ Yüklenemedi: ${fileInfo.name}`);
-                        }
-                    } catch (error) {
+                    // Yükle
+                    const success = await uploadCallback(file, fileInfo.path);
+
+                    if (success) {
+                        fileInfo.uploaded = true;
+                        this.syncedFiles.set(fileInfo.path, fileInfo);
+                        uploadedCount++;
+                        console.log(`✓ Yüklendi: ${fileInfo.name}`);
+                    } else {
                         failedCount++;
                         this.failedCount++;
-                        console.error(`Dosya yükleme hatası (${fileInfo.name}):`, error);
+                        console.error(`✗ Yüklenemedi: ${fileInfo.name}`);
                     }
+                    if (onProgress) onProgress(this.getStatus());
+                } catch (error) {
+                    failedCount++;
+                    this.failedCount++;
+                    console.error(`Dosya yükleme hatası (${fileInfo.name}):`, error);
+                    if (onProgress) onProgress(this.getStatus());
                 }
             }
 

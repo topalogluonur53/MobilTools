@@ -33,6 +33,10 @@ export const metadata: Metadata = {
     telephone: false,
   },
   manifest: '/manifest.json',
+  icons: {
+    icon: '/favicon.ico',
+    apple: '/icon-512.png',
+  },
 };
 
 export default function RootLayout({

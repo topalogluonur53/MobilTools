@@ -11,6 +11,7 @@ import {
     StatusBar,
     Alert,
     ActivityIndicator,
+    Dimensions,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
@@ -18,6 +19,9 @@ import * as FileSystem from 'expo-file-system';
 import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../services/api';
 import { registerBackgroundSync, unregisterBackgroundSync, getSyncStatus } from '../services/backgroundSync';
+import { Colors } from '../constants/colors';
+
+const { width } = Dimensions.get('window');
 
 interface SettingsScreenProps {
     onClose?: () => void;
@@ -37,6 +41,7 @@ export default function SettingsScreen({ onClose }: SettingsScreenProps) {
     const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0 });
 
     useEffect(() => {
+        console.log('Settings Screen Loaded');
         loadSettings();
         loadSyncStatus();
     }, []);
@@ -176,7 +181,7 @@ export default function SettingsScreen({ onClose }: SettingsScreenProps) {
                         const apiFileType = asset.type === 'image' ? 'PHOTO' : 'FILE';
 
                         const uploadResponse = await FileSystem.uploadAsync(
-                            `${API_URL}/drive/files`,
+                            `${API_URL}/drive/files/`,
                             asset.uri,
                             {
                                 fieldName: 'file',
@@ -224,7 +229,7 @@ export default function SettingsScreen({ onClose }: SettingsScreenProps) {
     };
 
     const formatDate = (date: Date | null) => {
-        if (!date) return 'Henüz yapılmadı';
+        if (!date) return 'Henüz yok';
         const now = new Date();
         const diff = now.getTime() - date.getTime();
         const minutes = Math.floor(diff / 60000);
@@ -232,349 +237,452 @@ export default function SettingsScreen({ onClose }: SettingsScreenProps) {
         const days = Math.floor(diff / 86400000);
 
         if (minutes < 1) return 'Az önce';
-        if (minutes < 60) return `${minutes} dakika önce`;
-        if (hours < 24) return `${hours} saat önce`;
+        if (minutes < 60) return `${minutes} dk önce`;
+        if (hours < 24) return `${hours} sa önce`;
         if (days < 7) return `${days} gün önce`;
-        return date.toLocaleDateString('tr-TR', { day: 'numeric', month: 'long', year: 'numeric' });
+        return date.toLocaleDateString('tr-TR', { day: 'numeric', month: 'long' });
     };
 
     return (
-        <SafeAreaView style={styles.safeArea}>
-            <StatusBar barStyle="dark-content" backgroundColor="#F2F2F7" />
+        <View style={styles.mainContainer}>
+            <StatusBar barStyle="dark-content" />
+            <SafeAreaView style={styles.safeArea}>
+                {/* Header */}
+                <View style={styles.header}>
+                    <Text style={styles.headerTitle}>Ayarlar</Text>
+                    {onClose && (
+                        <TouchableOpacity onPress={onClose} style={styles.closeButton}>
+                            <View style={styles.closeButtonCircle}>
+                                <Ionicons name="close" size={28} color="#1C1C1E" />
+                            </View>
+                        </TouchableOpacity>
+                    )}
+                </View>
 
-            {/* Header with Close Button */}
-            <View style={styles.headerContainer}>
-                <TouchableOpacity onPress={onClose} style={styles.closeButton}>
-                    <Ionicons name="close" size={28} color="#007AFF" />
-                </TouchableOpacity>
-                <Text style={styles.headerTitle}>Ayarlar</Text>
-                <View style={{ width: 28 }} />
-            </View>
+                <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
 
-            <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-                {/* Manual Backup Button */}
-                <View style={styles.section}>
+                    {/* Status Card */}
+                    <View style={styles.card}>
+                        <View style={styles.statusRow}>
+                            <View style={styles.statusItem}>
+                                <View style={[styles.iconContainer, { backgroundColor: '#E1F5FE' }]}>
+                                    <Ionicons name="cloud-done" size={24} color="#039BE5" />
+                                </View>
+                                <View style={styles.statusTextContainer}>
+                                    <Text style={styles.statusLabel}>Son Yedekleme</Text>
+                                    <Text style={styles.statusValue}>{formatDate(lastSyncTime)}</Text>
+                                </View>
+                            </View>
+                            <View style={styles.verticalDivider} />
+                            <View style={styles.statusItem}>
+                                <View style={[styles.iconContainer, { backgroundColor: '#E8F5E9' }]}>
+                                    <Ionicons name="images" size={24} color="#43A047" />
+                                </View>
+                                <View style={styles.statusTextContainer}>
+                                    <Text style={styles.statusLabel}>Toplam</Text>
+                                    <Text style={styles.statusValue}>{uploadedCount} Dosya</Text>
+                                </View>
+                            </View>
+                        </View>
+                    </View>
+
+                    {/* Main Action */}
                     <TouchableOpacity
-                        style={[styles.backupButton, isUploading && styles.backupButtonDisabled]}
+                        style={[styles.primaryActionCard, isUploading && styles.disabledCard]}
                         onPress={handleManualBackup}
                         disabled={isUploading}
-                        activeOpacity={0.7}
+                        activeOpacity={0.8}
                     >
                         {isUploading ? (
-                            <View style={styles.uploadingContainer}>
-                                <ActivityIndicator color="#fff" size="small" />
-                                <Text style={styles.backupButtonText}>
-                                    Yükleniyor ({uploadProgress.current}/{uploadProgress.total})
+                            <View style={styles.uploadingContent}>
+                                <ActivityIndicator color="#FFFFFF" size="small" />
+                                <Text style={styles.primaryActionText}>
+                                    Yedekleniyor... {Math.round((uploadProgress.current / uploadProgress.total) * 100)}%
                                 </Text>
                             </View>
                         ) : (
-                            <>
-                                <Ionicons name="cloud-upload-outline" size={24} color="#fff" />
-                                <Text style={styles.backupButtonText}>Galeriden Seç ve Yedekle</Text>
-                            </>
+                            <View style={styles.actionContent}>
+                                <View style={styles.actionIconCircle}>
+                                    <Ionicons name="cloud-upload" size={24} color="#007AFF" />
+                                </View>
+                                <View style={styles.actionTextContainer}>
+                                    <Text style={styles.primaryActionTitle}>Hemen Yedekle</Text>
+                                    <Text style={styles.primaryActionSubtitle}>Galeriden fotoğraf ve video seç</Text>
+                                </View>
+                                <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.6)" />
+                            </View>
                         )}
+                        {/* Decorative background gradient approximation using Views */}
+                        <View style={styles.actionBackgroundOverlay} />
                     </TouchableOpacity>
-                </View>
 
-                {/* Backup Info */}
-                <View style={styles.section}>
-                    <Text style={styles.sectionHeader}>YEDEKLEME BİLGİSİ</Text>
-                    <View style={styles.settingsGroup}>
-                        <View style={styles.infoRow}>
-                            <Text style={styles.infoLabel}>Son Yedekleme</Text>
-                            <Text style={styles.infoValue}>{formatDate(lastSyncTime)}</Text>
-                        </View>
-                        <View style={styles.rowDivider} />
-                        <View style={styles.infoRow}>
-                            <Text style={styles.infoLabel}>Yedeklenen Dosya</Text>
-                            <Text style={styles.infoValue}>{uploadedCount} öğe</Text>
-                        </View>
-                    </View>
-                </View>
-
-                {/* Auto Backup Section */}
-                <View style={styles.section}>
-                    <Text style={styles.sectionHeader}>OTOMATİK YEDEKLEME</Text>
-                    <View style={styles.settingsGroup}>
-                        <SettingRow
-                            label="Otomatik Yedekleme"
-                            description="Fotoğraf ve videoları otomatik yedekle"
+                    {/* Auto Sync Section */}
+                    <Text style={styles.sectionTitle}>OTOMATİK YEDEKLEME</Text>
+                    <View style={styles.card}>
+                        <SettingItem
+                            icon="sync"
+                            iconColor="#007AFF"
+                            iconBg="#E3F2FD"
+                            label="Otomatik Senkronizasyon"
                             value={autoSyncEnabled}
                             onValueChange={handleAutoSyncToggle}
+                            isLast={!autoSyncEnabled}
                         />
-                    </View>
-                </View>
 
-                {/* Backup Options */}
-                {autoSyncEnabled && (
-                    <>
-                        <View style={styles.section}>
-                            <Text style={styles.sectionHeader}>YEDEKLEME SEÇENEKLERİ</Text>
-                            <View style={styles.settingsGroup}>
-                                <SettingRow
-                                    label="Fotoğrafları Yedekle"
-                                    description="Tüm fotoğraflar otomatik yedeklensin"
-                                    value={backupPhotos}
-                                    onValueChange={handleBackupPhotosToggle}
-                                    showDivider
-                                />
-                                <SettingRow
-                                    label="Videoları Yedekle"
-                                    description="Tüm videolar otomatik yedeklensin"
-                                    value={backupVideos}
-                                    onValueChange={handleBackupVideosToggle}
-                                    showDivider
-                                />
-                                <SettingRow
-                                    label="Sadece Wi-Fi"
-                                    description="Yalnızca Wi-Fi bağlantısında yedekle"
+                        {autoSyncEnabled && (
+                            <>
+                                <View style={styles.separator} />
+                                <SettingItem
+                                    icon="wifi"
+                                    iconColor="#5E35B1"
+                                    iconBg="#EDE7F6"
+                                    label="Sadece Wi-Fi ile"
                                     value={wifiOnly}
                                     onValueChange={handleWifiOnlyToggle}
                                 />
-                            </View>
-                        </View>
+                                <View style={styles.separator} />
+                                <SettingItem
+                                    icon="image"
+                                    iconColor="#FB8C00"
+                                    iconBg="#FFF3E0"
+                                    label="Fotoğrafları Yedekle"
+                                    value={backupPhotos}
+                                    onValueChange={handleBackupPhotosToggle}
+                                />
+                                <View style={styles.separator} />
+                                <SettingItem
+                                    icon="videocam"
+                                    iconColor="#E53935"
+                                    iconBg="#FFEBEE"
+                                    label="Videoları Yedekle"
+                                    value={backupVideos}
+                                    onValueChange={handleBackupVideosToggle}
+                                    isLast
+                                />
+                            </>
+                        )}
+                    </View>
 
-                        {/* Schedule Section */}
-                        <View style={styles.section}>
-                            <Text style={styles.sectionHeader}>ZAMANLAMA</Text>
-                            <View style={styles.settingsGroup}>
-                                <SettingRow
-                                    label="Zamanlanmış Yedekleme"
-                                    description="Belirli saatler arasında yedekle"
+                    {/* Schedule Section */}
+                    {autoSyncEnabled && (
+                        <>
+                            <Text style={styles.sectionTitle}>ZAMANLAMA</Text>
+                            <View style={styles.card}>
+                                <SettingItem
+                                    icon="time"
+                                    iconColor="#8E24AA"
+                                    iconBg="#F3E5F5"
+                                    label="Zamanlanmış Görev"
                                     value={schedulingEnabled}
                                     onValueChange={handleSchedulingToggle}
+                                    isLast={!schedulingEnabled}
                                 />
+
+                                {schedulingEnabled && (
+                                    <>
+                                        <View style={styles.separator} />
+                                        <View style={styles.timeContainer}>
+                                            <View style={styles.timeBox}>
+                                                <Text style={styles.timeLabel}>Başlangıç</Text>
+                                                <View style={styles.timeValueBox}>
+                                                    <Text style={styles.timeValueText}>{startTime}</Text>
+                                                </View>
+                                            </View>
+                                            <Ionicons name="arrow-forward" size={16} color="#BDBDBD" />
+                                            <View style={styles.timeBox}>
+                                                <Text style={styles.timeLabel}>Bitiş</Text>
+                                                <View style={styles.timeValueBox}>
+                                                    <Text style={styles.timeValueText}>{endTime}</Text>
+                                                </View>
+                                            </View>
+                                        </View>
+                                    </>
+                                )}
                             </View>
+                        </>
+                    )}
 
-                            {schedulingEnabled && (
-                                <View style={styles.timeSettingsGroup}>
-                                    <View style={styles.timeRow}>
-                                        <Text style={styles.timeLabel}>Başlangıç Saati</Text>
-                                        <Text style={styles.timeValue}>{startTime}</Text>
-                                    </View>
-                                    <View style={styles.timeDivider} />
-                                    <View style={styles.timeRow}>
-                                        <Text style={styles.timeLabel}>Bitiş Saati</Text>
-                                        <Text style={styles.timeValue}>{endTime}</Text>
-                                    </View>
-                                </View>
-                            )}
-                        </View>
-                    </>
-                )}
-
-                {/* Info Footer */}
-                <View style={styles.footer}>
-                    <Text style={styles.footerText}>
-                        Otomatik yedekleme etkinleştirildiğinde, seçtiğiniz ayarlara göre fotoğraf ve
-                        videolarınız arka planda güvenli bir şekilde yedeklenir.
+                    <Text style={styles.footerNote}>
+                        Arka plan izinleri ve pil optimizasyonları yedekleme sıklığını etkileyebilir.
                     </Text>
-                </View>
-
-                <View style={{ height: 40 }} />
-            </ScrollView>
-        </SafeAreaView>
+                    <View style={{ height: 40 }} />
+                </ScrollView>
+            </SafeAreaView>
+        </View>
     );
 }
 
-// Reusable Setting Row Component
-interface SettingRowProps {
+// Reusable Setting Component
+interface SettingItemProps {
+    icon: any;
+    iconColor: string;
+    iconBg: string;
     label: string;
-    description?: string;
     value: boolean;
-    onValueChange: (value: boolean) => void;
-    showDivider?: boolean;
+    onValueChange: (val: boolean) => void;
+    isLast?: boolean;
 }
 
-const SettingRow: React.FC<SettingRowProps> = ({
+const SettingItem: React.FC<SettingItemProps> = ({
+    icon,
+    iconColor,
+    iconBg,
     label,
-    description,
     value,
     onValueChange,
-    showDivider = false,
-}) => {
-    return (
-        <>
-            <View style={styles.settingRow}>
-                <View style={styles.settingTextContainer}>
-                    <Text style={styles.settingLabel}>{label}</Text>
-                    {description && <Text style={styles.settingDescription}>{description}</Text>}
-                </View>
-                <Switch
-                    value={value}
-                    onValueChange={onValueChange}
-                    trackColor={{ false: '#E5E5EA', true: '#34C759' }}
-                    thumbColor="#FFFFFF"
-                    ios_backgroundColor="#E5E5EA"
-                    style={styles.switch}
-                />
+    isLast
+}) => (
+    <View style={[styles.settingItem, isLast && styles.settingItemLast]}>
+        <View style={styles.settingLeft}>
+            <View style={[styles.settingIconBox, { backgroundColor: iconBg }]}>
+                <Ionicons name={icon} size={20} color={iconColor} />
             </View>
-            {showDivider && <View style={styles.rowDivider} />}
-        </>
-    );
-};
+            <Text style={styles.settingLabel}>{label}</Text>
+        </View>
+        <Switch
+            value={value}
+            onValueChange={onValueChange}
+            trackColor={{ false: '#E0E0E0', true: '#34C759' }}
+            thumbColor="#FFFFFF"
+        />
+    </View>
+);
 
 const styles = StyleSheet.create({
-    safeArea: {
+    mainContainer: {
         flex: 1,
         backgroundColor: '#F2F2F7',
     },
-    container: {
+    safeArea: {
         flex: 1,
+        paddingTop: Platform.OS === 'android' ? 30 : 0,
     },
-    headerContainer: {
+    header: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        paddingHorizontal: 16,
-        paddingVertical: 12,
+        paddingHorizontal: 20,
+        paddingTop: 10,
+        paddingBottom: 10,
         backgroundColor: '#F2F2F7',
-        borderBottomWidth: 0.5,
-        borderBottomColor: '#E5E5EA',
+    },
+    headerTitle: {
+        fontSize: 34,
+        fontWeight: '700',
+        color: '#1C1C1E',
+        letterSpacing: -0.5,
     },
     closeButton: {
         padding: 4,
     },
-    headerTitle: {
-        fontSize: 17,
-        fontWeight: '600',
-        color: '#000000',
+    closeButtonCircle: {
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        backgroundColor: 'transparent',
+        alignItems: 'center',
+        justifyContent: 'center',
     },
-    backupButton: {
+    scrollView: {
+        flex: 1,
+    },
+    scrollContent: {
+        paddingHorizontal: 16,
+        paddingTop: 10,
+    },
+    sectionTitle: {
+        fontSize: 13,
+        fontWeight: '600',
+        color: '#8A8A8E',
+        textTransform: 'uppercase',
+        marginLeft: 16,
+        marginBottom: 8,
+        marginTop: 24,
+    },
+    card: {
+        backgroundColor: '#FFFFFF',
+        borderRadius: 16,
+        overflow: 'hidden',
+        // iOS Shadow
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.05,
+        shadowRadius: 8,
+        // Android Shadow
+        elevation: 2,
+    },
+    statusRow: {
+        flexDirection: 'row',
+        paddingVertical: 16,
+    },
+    statusItem: {
+        flex: 1,
+        alignItems: 'center',
+        flexDirection: 'row',
+        paddingHorizontal: 16,
+        gap: 12,
+    },
+    iconContainer: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    statusTextContainer: {
+        flex: 1,
+    },
+    statusLabel: {
+        fontSize: 12,
+        color: '#8A8A8E',
+        fontWeight: '500',
+    },
+    statusValue: {
+        fontSize: 15,
+        color: '#1C1C1E',
+        fontWeight: '600',
+        marginTop: 2,
+    },
+    verticalDivider: {
+        width: 1,
+        backgroundColor: '#E5E5EA',
+        marginVertical: 4,
+    },
+    primaryActionCard: {
+        marginTop: 20,
         backgroundColor: '#007AFF',
-        borderRadius: 10,
-        paddingVertical: 14,
+        borderRadius: 16,
+        padding: 16,
+        position: 'relative',
+        overflow: 'hidden',
+        // iOS Shadow
+        shadowColor: '#007AFF',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+        // Android Shadow
+        elevation: 4,
+    },
+    disabledCard: {
+        backgroundColor: '#8E8E93',
+        shadowOpacity: 0.1,
+    },
+    actionBackgroundOverlay: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: 'rgba(255,255,255,0.05)',
+        transform: [{ skewX: '-20deg' }, { translateX: -50 }],
+    },
+    actionContent: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    uploadingContent: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 8,
+        paddingVertical: 4,
+        gap: 10,
     },
-    backupButtonDisabled: {
-        backgroundColor: '#8E8E93',
+    actionIconCircle: {
+        width: 44,
+        height: 44,
+        borderRadius: 22,
+        backgroundColor: '#FFFFFF',
+        alignItems: 'center',
+        justifyContent: 'center',
     },
-    backupButtonIcon: {
-        fontSize: 20,
+    actionTextContainer: {
+        flex: 1,
+        marginLeft: 14,
     },
-    backupButtonText: {
+    primaryActionTitle: {
+        fontSize: 17,
+        fontWeight: '700',
         color: '#FFFFFF',
+    },
+    primaryActionSubtitle: {
+        fontSize: 13,
+        color: 'rgba(255,255,255,0.9)',
+        marginTop: 2,
+    },
+    primaryActionText: {
         fontSize: 16,
         fontWeight: '600',
+        color: '#FFFFFF',
     },
-    uploadingContainer: {
+
+    // Settings Items
+    settingItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingVertical: 12,
+        paddingHorizontal: 16,
+    },
+    settingItemLast: {
+        paddingBottom: 12,
+    },
+    settingLeft: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 12,
     },
-
-    // Section
-    section: {
-        marginBottom: 20,
-    },
-    sectionHeader: {
-        fontSize: 13,
-        fontWeight: '400',
-        color: '#8E8E93',
-        letterSpacing: -0.08,
-        paddingHorizontal: 20,
-        paddingBottom: 8,
-        textTransform: 'uppercase',
-    },
-    settingsGroup: {
-        backgroundColor: '#FFFFFF',
-        marginHorizontal: 16,
-        borderRadius: 14,
-        overflow: 'hidden',
-    },
-    settingRow: {
-        flexDirection: 'row',
+    settingIconBox: {
+        width: 32,
+        height: 32,
+        borderRadius: 8,
         alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingVertical: 12,
-        paddingHorizontal: 16,
-        minHeight: 44,
-    },
-    settingTextContainer: {
-        flex: 1,
-        marginRight: 12,
+        justifyContent: 'center',
     },
     settingLabel: {
-        fontSize: 17,
-        color: '#000000',
-        marginBottom: 2,
-    },
-    settingDescription: {
-        fontSize: 13,
-        color: '#8E8E93',
-        marginTop: 2,
-    },
-    switch: {
-        transform: Platform.OS === 'ios' ? [] : [{ scaleX: 0.9 }, { scaleY: 0.9 }],
-    },
-    rowDivider: {
-        height: 0.5,
-        backgroundColor: '#E5E5EA',
-        marginLeft: 16,
-    },
-
-    // Info Rows
-    infoRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingVertical: 12,
-        paddingHorizontal: 16,
-        minHeight: 44,
-    },
-    infoLabel: {
-        fontSize: 17,
-        color: '#000000',
-    },
-    infoValue: {
-        fontSize: 17,
-        color: '#8E8E93',
+        fontSize: 16,
+        color: '#1C1C1E',
         fontWeight: '500',
     },
-
-    // Time Settings
-    timeSettingsGroup: {
-        backgroundColor: '#FFFFFF',
-        marginHorizontal: 16,
-        marginTop: 12,
-        borderRadius: 14,
-        overflow: 'hidden',
+    separator: {
+        height: 0.5,
+        backgroundColor: '#C6C6C8',
+        marginLeft: 60,
     },
-    timeRow: {
+
+    // Time Selector
+    timeContainer: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        paddingVertical: 12,
-        paddingHorizontal: 16,
-        minHeight: 44,
+        padding: 16,
+        backgroundColor: '#FAF9FA',
+    },
+    timeBox: {
+        flex: 1,
+        alignItems: 'center',
     },
     timeLabel: {
-        fontSize: 17,
-        color: '#000000',
+        fontSize: 12,
+        color: '#8A8A8E',
+        marginBottom: 4,
     },
-    timeValue: {
-        fontSize: 17,
-        color: '#007AFF',
-        fontWeight: '500',
+    timeValueBox: {
+        backgroundColor: '#FFFFFF',
+        paddingVertical: 6,
+        paddingHorizontal: 12,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: '#E5E5EA',
     },
-    timeDivider: {
-        height: 0.5,
-        backgroundColor: '#E5E5EA',
-        marginLeft: 16,
+    timeValueText: {
+        fontSize: 15,
+        fontWeight: '600',
+        color: '#1C1C1E',
     },
 
-    // Footer
-    footer: {
-        paddingHorizontal: 32,
-        paddingTop: 12,
-    },
-    footerText: {
-        fontSize: 13,
-        color: '#8E8E93',
-        lineHeight: 18,
+    footerNote: {
+        fontSize: 12,
+        color: '#8A8A8E',
         textAlign: 'center',
+        marginTop: 24,
+        marginHorizontal: 20,
+        lineHeight: 16,
     },
 });

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/store/authStore';
 import api from '@/lib/api';
@@ -64,7 +64,7 @@ interface BrowseResponse {
     items: BrowseItem[];
 }
 
-type TabType = 'files' | 'photos' | 'archive' | 'shared' | 'trash' | 'favorites';
+type TabType = 'files' | 'photos' | 'archive' | 'shared' | 'trash' | 'favorites' | 'settings';
 
 const SmartThumbnail = ({ item, viewMode, iconSize, onToggleFavorite, isSelectionMode, isSelected }: { item: BrowseItem | FileItem, viewMode: 'list' | 'grid', iconSize?: number, onToggleFavorite?: (item: FileItem) => void, isSelectionMode?: boolean, isSelected?: boolean }) => {
     const [objUrl, setObjUrl] = useState<string | null>(null);
@@ -156,17 +156,9 @@ const SmartThumbnail = ({ item, viewMode, iconSize, onToggleFavorite, isSelectio
                         responseType: 'blob'
                     });
                 } else if (!isShared && isImage) {
-                    // Personal Image -> Fetch Thumbnail
-                    try {
-                        response = await api.get(`/drive/thumbnail/${(item as FileItem).id}`, {
-                            responseType: 'blob'
-                        });
-                    } catch (e) {
-                        // Thumbnail fallback to original if failed
-                        console.warn("Thumbnail failed, falling back for:", (item as FileItem).filename);
-                        setLoading(false);
-                        return;
-                    }
+                    // Personal Image -> Use direct URL (Performance Fix)
+                    setLoading(false);
+                    return;
                 } else {
                     setLoading(false);
                     return;
@@ -228,8 +220,8 @@ const SmartThumbnail = ({ item, viewMode, iconSize, onToggleFavorite, isSelectio
                             muted
                             loop
                             playsInline
-                            // Sadece Grid veya Context Menu modunda otomatik oynat
-                            autoPlay={viewMode === 'grid' || !!iconSize}
+                            // Disable autoplay for performance
+                            autoPlay={!!iconSize}
                         />
                         {/* Video ikonu overlay */}
                         <div className="absolute inset-0 flex items-center justify-center bg-black/10">
@@ -437,8 +429,7 @@ export default function OOCloudDashboard() {
         if (success) {
             setFolderSyncStatus(folderSyncService.getStatus());
             if (folderSyncEnabled) {
-                await folderSyncService.startAutoSync(handleFolderUpload, 5);
-                setFolderSyncStatus(folderSyncService.getStatus());
+                await folderSyncService.startAutoSync(handleFolderUpload, (s) => setFolderSyncStatus(prev => ({ ...prev, ...s })));
             }
         }
         return success;
@@ -449,15 +440,13 @@ export default function OOCloudDashboard() {
             // Önce klasör seçilmişse sync başlat
             if (folderSyncStatus.folderSelected) {
                 setFolderSyncEnabled(true);
-                await folderSyncService.startAutoSync(handleFolderUpload, 5);
-                setFolderSyncStatus(folderSyncService.getStatus());
+                await folderSyncService.startAutoSync(handleFolderUpload, (s) => setFolderSyncStatus(prev => ({ ...prev, ...s })));
             } else {
                 // Klasör seçilmemişse, klasör seç
                 const success = await handleSelectFolder();
                 if (success) {
                     setFolderSyncEnabled(true);
-                    await folderSyncService.startAutoSync(handleFolderUpload, 5);
-                    setFolderSyncStatus(folderSyncService.getStatus());
+                    await folderSyncService.startAutoSync(handleFolderUpload, (s) => setFolderSyncStatus(prev => ({ ...prev, ...s })));
                 } else {
                     // Kullanıcı iptal etti, toggle'ı kapat
                     setFolderSyncEnabled(false);
@@ -482,8 +471,7 @@ export default function OOCloudDashboard() {
 
         setIsManualSyncing(true);
         try {
-            await folderSyncService.syncNewFiles(handleFolderUpload);
-            setFolderSyncStatus(folderSyncService.getStatus());
+            await folderSyncService.syncNewFiles(handleFolderUpload, (s) => setFolderSyncStatus(prev => ({ ...prev, ...s })));
         } catch (e) {
             console.error(e);
         } finally {
@@ -560,7 +548,7 @@ export default function OOCloudDashboard() {
             // Çalışması gerekiyorsa ve çalışmıyorsa başlat
             if (shouldRun && !folderSyncStatus.isRunning && folderSyncStatus.folderSelected) {
                 console.log('🔄 Otomatik Senkronizasyon Başlatılıyor...');
-                await folderSyncService.startAutoSync(handleFolderUpload, 5);
+                await folderSyncService.startAutoSync(handleFolderUpload, (s) => setFolderSyncStatus(prev => ({ ...prev, ...s })));
                 setFolderSyncStatus(folderSyncService.getStatus());
             }
         };
@@ -579,6 +567,59 @@ export default function OOCloudDashboard() {
     const [searchQuery, setSearchQuery] = useState('');
 
     const [mounted, setMounted] = useState(false);
+
+    // Filter files based on active tab
+    const filteredFiles = useMemo(() => files.filter(f => {
+        // Search Filter
+        if (searchQuery && !f.filename.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+
+        // Media Filter Logic
+        if (filterType === 'photo' && f.file_type !== 'PHOTO') return false;
+        if (filterType === 'video' && f.file_type !== 'VIDEO') return false;
+
+        if (activeTab === 'trash') return true;
+        if (activeTab === 'favorites') return f.is_favorite;
+        if (activeTab === 'photos') return f.file_type === 'PHOTO';
+        if (activeTab === 'files') return f.file_type === 'FILE'; // Sadece Dosyalar
+        return true;
+    }), [files, activeTab, searchQuery, filterType]);
+
+    // Pagination / Infinite Scroll
+    const [visibleCount, setVisibleCount] = useState(100);
+    const observerTarget = useRef<HTMLDivElement>(null);
+    const filteredFilesRef = useRef(filteredFiles);
+
+    // Keep ref in sync
+    filteredFilesRef.current = filteredFiles;
+
+    useEffect(() => {
+        setVisibleCount(100);
+    }, [activeTab, filterType, searchQuery]);
+
+    useEffect(() => {
+        const observer = new IntersectionObserver(
+            entries => {
+                if (entries[0].isIntersecting) {
+                    setVisibleCount(prev => {
+                        if (prev < filteredFilesRef.current.length) {
+                            return prev + 50;
+                        }
+                        return prev;
+                    });
+                }
+            },
+            { rootMargin: '400px', threshold: 0 }
+        );
+
+        const currentTarget = observerTarget.current;
+        if (currentTarget) {
+            observer.observe(currentTarget);
+        }
+
+        return () => {
+            observer.disconnect();
+        };
+    }, [activeTab, filterType, searchQuery]);
 
     useEffect(() => {
         setMounted(true);
@@ -1044,21 +1085,7 @@ export default function OOCloudDashboard() {
 
 
 
-    // Filter files based on active tab
-    const filteredFiles = files.filter(f => {
-        // Search Filter
-        if (searchQuery && !f.filename.toLowerCase().includes(searchQuery.toLowerCase())) return false;
 
-        // Media Filter Logic
-        if (filterType === 'photo' && f.file_type !== 'PHOTO') return false;
-        if (filterType === 'video' && f.file_type !== 'VIDEO') return false;
-
-        if (activeTab === 'trash') return true;
-        if (activeTab === 'favorites') return f.is_favorite;
-        if (activeTab === 'photos') return f.file_type === 'PHOTO';
-        if (activeTab === 'files') return f.file_type === 'FILE'; // Sadece Dosyalar
-        return true;
-    });
 
     // URL düzeltme fonksiyonu
     const getFileUrl = (file: FileItem) => {
@@ -1097,66 +1124,68 @@ export default function OOCloudDashboard() {
             touchAction: 'manipulation'
         }}>
             {/* Top Navigation Bar */}
-            <div className="bg-white/80 dark:bg-[#1C1C1E]/80 backdrop-blur-md sticky top-0 z-30 px-4 py-3 border-b border-gray-200 dark:border-white/10 flex justify-between items-center">
-                {isSelectionMode ? (
-                    <div className="flex items-center justify-between w-full">
-                        <div className="flex items-center gap-2">
-                            <button onClick={() => { setIsSelectionMode(false); setSelectedIds(new Set()); }} className="p-2 -ml-2 text-gray-600 dark:text-gray-300">
-                                <X size={24} />
-                            </button>
-                            <div className="flex flex-col">
-                                <span className="text-lg font-bold text-black dark:text-white leading-none">{selectedIds.size} Seçildi</span>
-                                <button onClick={handleSelectAll} className="text-xs text-blue-500 font-medium text-left mt-1 flex items-center gap-1">
-                                    {selectedIds.size === filteredFiles.length && filteredFiles.length > 0 ? (
-                                        <>Tümünü Kaldır</>
-                                    ) : (
-                                        <>Tümünü Seç</>
-                                    )}
+            {activeTab !== 'settings' && (
+                <div className="bg-white/80 dark:bg-[#1C1C1E]/80 backdrop-blur-md sticky top-0 z-30 px-4 py-3 border-b border-gray-200 dark:border-white/10 flex justify-between items-center">
+                    {isSelectionMode ? (
+                        <div className="flex items-center justify-between w-full">
+                            <div className="flex items-center gap-2">
+                                <button onClick={() => { setIsSelectionMode(false); setSelectedIds(new Set()); }} className="p-2 -ml-2 text-gray-600 dark:text-gray-300">
+                                    <X size={24} />
+                                </button>
+                                <div className="flex flex-col">
+                                    <span className="text-lg font-bold text-black dark:text-white leading-none">{selectedIds.size} Seçildi</span>
+                                    <button onClick={handleSelectAll} className="text-xs text-blue-500 font-medium text-left mt-1 flex items-center gap-1">
+                                        {selectedIds.size === filteredFiles.length && filteredFiles.length > 0 ? (
+                                            <>Tümünü Kaldır</>
+                                        ) : (
+                                            <>Tümünü Seç</>
+                                        )}
+                                    </button>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-1">
+                                {activeTab === 'trash' ? (
+                                    <button onClick={handleBulkRestore} className="flex flex-col items-center justify-center p-1.5 min-w-[50px] text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors">
+                                        <RotateCcw size={20} />
+                                        <span className="text-[9px] font-bold leading-none mt-0.5">Geri Yükle</span>
+                                    </button>
+                                ) : (
+                                    <button onClick={handleBulkFavorite} className="flex flex-col items-center justify-center p-1.5 min-w-[50px] text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors">
+                                        <Heart size={20} className={files.filter(f => selectedIds.has(f.id)).every(f => f.is_favorite) && selectedIds.size > 0 ? "fill-current" : ""} />
+                                        <span className="text-[9px] font-bold leading-none mt-0.5">Favorile</span>
+                                    </button>
+                                )}
+                                <button onClick={handleBulkDelete} className="flex flex-col items-center justify-center p-1.5 min-w-[50px] text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors">
+                                    <Trash2 size={20} />
+                                    <span className="text-[9px] font-bold leading-none mt-0.5">Sil</span>
                                 </button>
                             </div>
                         </div>
-                        <div className="flex items-center gap-1">
-                            {activeTab === 'trash' ? (
-                                <button onClick={handleBulkRestore} className="flex flex-col items-center justify-center p-1.5 min-w-[50px] text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors">
-                                    <RotateCcw size={20} />
-                                    <span className="text-[9px] font-bold leading-none mt-0.5">Geri Yükle</span>
-                                </button>
-                            ) : (
-                                <button onClick={handleBulkFavorite} className="flex flex-col items-center justify-center p-1.5 min-w-[50px] text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors">
-                                    <Heart size={20} className={files.filter(f => selectedIds.has(f.id)).every(f => f.is_favorite) && selectedIds.size > 0 ? "fill-current" : ""} />
-                                    <span className="text-[9px] font-bold leading-none mt-0.5">Favorile</span>
-                                </button>
-                            )}
-                            <button onClick={handleBulkDelete} className="flex flex-col items-center justify-center p-1.5 min-w-[50px] text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors">
-                                <Trash2 size={20} />
-                                <span className="text-[9px] font-bold leading-none mt-0.5">Sil</span>
-                            </button>
-                        </div>
-                    </div>
-                ) : (
-                    <>
-                        <div className="flex items-center gap-3">
-                            <h1 className="text-xl font-bold text-black dark:text-white">
-                                {activeTab === 'files' && 'Dosyalarım'}
-                                {activeTab === 'photos' && 'Fotoğraflar'}
-                                {activeTab === 'archive' && 'Arşiv'}
-                                {activeTab === 'shared' && 'Paylaşılan'}
-                                {activeTab === 'trash' && 'Çöp Kutusu'}
-                                {activeTab === 'favorites' && 'Favoriler'}
-                            </h1>
-                        </div>
+                    ) : (
+                        <>
+                            <div className="flex items-center gap-3">
+                                <h1 className="text-xl font-bold text-black dark:text-white">
+                                    {activeTab === 'files' && 'Dosyalarım'}
+                                    {activeTab === 'photos' && 'Fotoğraflar'}
+                                    {activeTab === 'archive' && 'Arşiv'}
+                                    {activeTab === 'shared' && 'Paylaşılan'}
+                                    {activeTab === 'trash' && 'Çöp Kutusu'}
+                                    {activeTab === 'favorites' && 'Favoriler'}
+                                </h1>
+                            </div>
 
-                        <div className="flex items-center gap-2">
-                            <button
-                                onClick={() => setShowUploadMenu(true)}
-                                className="flex flex-col items-center justify-center p-2 rounded-full bg-blue-500 text-white transition-transform active:scale-95 shadow-md shadow-blue-500/30"
-                            >
-                                <Plus size={20} strokeWidth={2.5} />
-                            </button>
-                        </div>
-                    </>
-                )}
-            </div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={() => setShowUploadMenu(true)}
+                                    className="flex flex-col items-center justify-center p-2 rounded-full bg-blue-500 text-white transition-transform active:scale-95 shadow-md shadow-blue-500/30"
+                                >
+                                    <Plus size={20} strokeWidth={2.5} />
+                                </button>
+                            </div>
+                        </>
+                    )}
+                </div>
+            )}
 
             {/* Search Bar (Optional Visual) */}
             <div className="px-4 py-3 flex items-center gap-2">
@@ -1469,7 +1498,7 @@ export default function OOCloudDashboard() {
                                 className={viewMode === 'grid' ? "grid gap-1" : "flex flex-col gap-2"}
                                 style={viewMode === 'grid' ? { gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))` } : {}}
                             >
-                                {filteredFiles.map((file) => (
+                                {filteredFiles.slice(0, visibleCount).map((file) => (
                                     <div
                                         key={file.id}
                                         onClick={() => handleOpen(file)}
@@ -1573,6 +1602,11 @@ export default function OOCloudDashboard() {
                                         )}
                                     </div>
                                 ))}
+                                <div ref={observerTarget} className="col-span-full h-10 w-full flex items-center justify-center">
+                                    {visibleCount < filteredFiles.length && (
+                                        <div className="text-xs text-gray-400">Yükleniyor...</div>
+                                    )}
+                                </div>
                             </div>
                         )}
                     </>
@@ -1732,244 +1766,249 @@ export default function OOCloudDashboard() {
                 )}
             </AnimatePresence>
 
-            {/* Settings Modal */}
-            <AnimatePresence>
-                {showSettings && (
-                    <>
-                        <motion.div
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            exit={{ opacity: 0 }}
-                            onClick={() => setShowSettings(false)}
-                            className="fixed inset-0 bg-black/40 backdrop-blur-sm z-40"
-                        />
-                        <motion.div
-                            initial={{ scale: 0.95, opacity: 0 }}
-                            animate={{ scale: 1, opacity: 1 }}
-                            exit={{ scale: 0.95, opacity: 0 }}
-                            className="fixed inset-0 m-auto w-[90%] max-w-lg h-[80vh] bg-white dark:bg-[#1C1C1E] rounded-3xl z-50 flex flex-col shadow-2xl overflow-hidden"
-                        >
-                            <div className="flex-none px-6 py-5 flex justify-between items-center border-b border-gray-100 dark:border-white/5 bg-white dark:bg-[#1C1C1E]">
-                                <h3 className="text-xl font-bold dark:text-white">Ayarlar</h3>
-                                <button
-                                    onClick={() => setShowSettings(false)}
-                                    className="p-2 bg-gray-100 dark:bg-white/10 rounded-full hover:bg-gray-200 dark:hover:bg-white/20 transition-colors"
-                                >
-                                    <X size={20} className="text-gray-600 dark:text-gray-300" />
-                                </button>
+            {/* Settings Page */}
+            {activeTab === 'settings' && (
+                <div className="fixed inset-0 w-full h-full bg-[#F2F2F7] dark:bg-[#000000] z-20 flex flex-col overflow-hidden pb-20">
+                    <div className="flex-none px-6 pt-16 pb-4 flex justify-between items-center bg-white dark:bg-[#1C1C1E] border-b border-gray-200 dark:border-white/10 relative z-30">
+                        <h3 className="text-3xl font-bold dark:text-white tracking-tight">Ayarlar</h3>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto p-4 space-y-8 bg-[#F2F2F7] dark:bg-[#000000] scrollbar-hide pb-24">
+
+                        {/* Profil Header - Premium Card */}
+                        <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-6 flex flex-col items-center shadow-sm border border-gray-100 dark:border-white/5">
+                            <div className="w-24 h-24 bg-gradient-to-tr from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-4xl font-bold text-white mb-4 shadow-lg ring-4 ring-white dark:ring-white/5">
+                                {user?.username?.[0]?.toUpperCase() || 'K'}
                             </div>
+                            <h3 className="text-2xl font-bold text-gray-900 dark:text-white tracking-tight">{user?.username || 'Kullanıcı'}</h3>
+                            <p className="text-sm text-gray-500 font-medium mt-1">Standart Plan</p>
+                        </div>
 
-                            <div className="flex-1 overflow-y-auto p-6 space-y-6 scrollbar-hide">
-
-                                {/* Profil Header */}
-                                <div className="flex flex-col items-center pt-2 pb-2">
-                                    <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full flex items-center justify-center text-2xl font-bold text-white mb-2 shadow-lg ring-2 ring-white dark:ring-white/10">
-                                        {user?.username?.[0]?.toUpperCase() || 'K'}
+                        {/* Storage Section - Modern */}
+                        <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-white/5">
+                            <div className="flex justify-between items-center mb-4">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-8 h-8 rounded-lg bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center">
+                                        <Cloud size={16} className="text-blue-600 dark:text-blue-400" />
                                     </div>
-                                    <h3 className="text-lg font-bold text-black dark:text-white">{user?.username || 'Kullanıcı'}</h3>
-                                    <p className="text-xs text-gray-500 font-medium">Standart Plan</p>
+                                    <span className="font-semibold text-gray-900 dark:text-white">Depolama Alanı</span>
+                                </div>
+                                <span className="text-sm font-medium text-gray-500">
+                                    {(() => {
+                                        const totalBytes = files.reduce((sum, f) => sum + (f.file_size || 0), 0);
+                                        const totalGB = (totalBytes / (1024 * 1024 * 1024)).toFixed(2);
+                                        return `${totalGB} GB / 5 GB`;
+                                    })()}
+                                </span>
+                            </div>
+                            <div className="w-full bg-gray-100 dark:bg-gray-800 h-3 rounded-full overflow-hidden mb-2">
+                                <div
+                                    className="bg-blue-500 h-full rounded-full shadow-lg shadow-blue-500/30 transition-all duration-700 ease-out"
+                                    style={{
+                                        width: `${Math.min((files.reduce((sum, f) => sum + (f.file_size || 0), 0) / (5 * 1024 * 1024 * 1024)) * 100, 100)}%`
+                                    }}
+                                />
+                            </div>
+                            <div className="flex justify-end">
+                                <span className="text-xs text-gray-400 font-medium">{files.length} dosya yüklendi</span>
+                            </div>
+                        </div>
+
+                        {/* Settings Group 1: Sync Options */}
+                        <div>
+                            <h4 className="text-sm font-semibold text-gray-500 uppercase px-4 mb-2 ml-1 tracking-wider">SENKRONİZASYON</h4>
+                            <div className="bg-white dark:bg-[#1C1C1E] rounded-xl overflow-hidden shadow-sm border border-gray-200/50 dark:border-white/5 divide-y divide-gray-100 dark:divide-white/5">
+
+                                {/* Auto Sync Toggle */}
+                                <div className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-white/5 transition-colors">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-8 h-8 rounded-lg bg-blue-500 flex items-center justify-center shadow-sm">
+                                            <RefreshCw size={16} className="text-white" />
+                                        </div>
+                                        <span className="text-base font-medium text-gray-900 dark:text-white">Otomatik Yedekleme</span>
+                                    </div>
+                                    <div
+                                        onClick={() => {
+                                            console.log('Sync toggled');
+                                            setFolderSyncEnabled(!folderSyncEnabled);
+                                        }}
+                                        className={`w-12 h-7 rounded-full p-1 cursor-pointer transition-colors duration-300 border border-transparent ${folderSyncEnabled ? 'bg-green-500' : 'bg-gray-200 dark:bg-gray-700'}`}
+                                    >
+                                        <div className={`w-5 h-5 bg-white rounded-full shadow-md transition-transform duration-300 ${folderSyncEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                                    </div>
                                 </div>
 
-                                {/* Depolama */}
-                                <div className="bg-gray-50/50 dark:bg-[#2C2C2E]/50 p-5 rounded-2xl border border-gray-100 dark:border-white/5">
-                                    <div className="flex justify-between text-sm mb-3">
-                                        <span className="font-semibold dark:text-white">Depolama Alanı</span>
-                                        <span className="text-gray-500">
-                                            {(() => {
-                                                const totalBytes = files.reduce((sum, f) => sum + (f.file_size || 0), 0);
-                                                const totalGB = (totalBytes / (1024 * 1024 * 1024)).toFixed(2);
-                                                return `${totalGB} GB / 5 GB`;
-                                            })()}
-                                        </span>
-                                    </div>
-                                    <div className="w-full bg-gray-200 dark:bg-gray-700 h-2.5 rounded-full overflow-hidden">
-                                        <div
-                                            className="bg-blue-500 h-full rounded-full shadow-lg shadow-blue-500/30 transition-all duration-500"
-                                            style={{
-                                                width: `${Math.min((files.reduce((sum, f) => sum + (f.file_size || 0), 0) / (5 * 1024 * 1024 * 1024)) * 100, 100)}%`
-                                            }}
-                                        />
-                                    </div>
-                                    <div className="mt-3 pt-3 border-t border-gray-200 dark:border-white/10 flex justify-between text-xs">
-                                        <span className="text-gray-500">Toplam Dosya</span>
-                                        <span className="font-semibold dark:text-white">{files.length} öğe</span>
-                                    </div>
-                                </div>
+                                {/* Dynamic Settings */}
+                                {folderSyncEnabled && (
+                                    <>
+                                        {/* Source Folder */}
+                                        {!isMobile && (
+                                            <div onClick={handleSelectFolder} className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group">
+                                                <div className="flex items-center gap-3">
+                                                    <div className="w-8 h-8 rounded-lg bg-indigo-500 flex items-center justify-center shadow-sm group-hover:scale-110 transition-transform">
+                                                        <Folder size={16} className="text-white" />
+                                                    </div>
+                                                    <div className="flex flex-col">
+                                                        <span className="text-base font-medium text-gray-900 dark:text-white">Medya Kaynağı Seç</span>
+                                                        <span className="text-xs text-gray-400">
+                                                            {folderSyncStatus.folderSelected
+                                                                ? `${folderSyncStatus.totalFiles} dosya bulundu`
+                                                                : 'Cihazdaki fotoğraf/video alanını seçin'}
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    {folderSyncStatus.folderSelected && (
+                                                        <span className="text-xs font-semibold text-indigo-600 bg-indigo-50 dark:bg-indigo-900/20 px-2 py-1 rounded-md">
+                                                            {folderSyncStatus.folderName}
+                                                        </span>
+                                                    )}
+                                                    <ChevronRight size={18} className="text-gray-400" />
+                                                </div>
+                                            </div>
+                                        )}
 
-                                {/* Yedekleme (iOS Style Minimalist) */}
-                                <div>
-                                    <h4 className="text-xs font-medium text-gray-500 uppercase px-4 mb-2 ml-1">Senkronizasyon</h4>
-
-                                    <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden divide-y divide-gray-100 dark:divide-white/5 border border-gray-200/50 dark:border-white/5 shadow-sm mx-1">
-
-                                        {/* Otomatik Yedekleme */}
+                                        {/* Wifi Only */}
                                         <div className="flex items-center justify-between p-4 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors">
-                                            <span className="text-sm font-medium dark:text-white">Otomatik Yedekleme</span>
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-8 h-8 rounded-lg bg-sky-500 flex items-center justify-center shadow-sm">
+                                                    <Cloud size={16} className="text-white" />
+                                                </div>
+                                                <span className="text-base font-medium text-gray-900 dark:text-white">Sadece Wi-Fi</span>
+                                            </div>
                                             <div
-                                                onClick={() => setAutoSync(!autoSync)}
-                                                className={`w-11 h-6 rounded-full p-1 cursor-pointer transition-colors duration-300 ${autoSync ? 'bg-green-500' : 'bg-gray-200 dark:bg-gray-700'}`}
+                                                onClick={() => setSyncWifiOnly(!syncWifiOnly)}
+                                                className={`w-12 h-7 rounded-full p-1 cursor-pointer transition-colors duration-300 border border-transparent ${syncWifiOnly ? 'bg-green-500' : 'bg-gray-200 dark:bg-gray-700'}`}
                                             >
-                                                <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform duration-300 ${autoSync ? 'translate-x-5' : 'translate-x-0'}`} />
+                                                <div className={`w-5 h-5 bg-white rounded-full shadow-md transition-transform duration-300 ${syncWifiOnly ? 'translate-x-5' : 'translate-x-0'}`} />
                                             </div>
                                         </div>
 
-                                        {/* Otomatik Yedekleme AÇIKKEN göster */}
-                                        {autoSync && (
-                                            <>
-                                                {/* Source Folder */}
-                                                {!isMobile && (
-                                                    <div onClick={handleSelectFolder} className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-white/5 active:bg-gray-100 dark:active:bg-white/10 transition-colors">
-                                                        <span className="text-sm dark:text-white">Kaynak Klasör</span>
-                                                        <div className="flex items-center gap-2">
-                                                            <span className="text-xs text-gray-500 truncate max-w-[150px]">{folderSyncStatus.folderSelected ? folderSyncStatus.folderName : 'Seçilmedi'}</span>
-                                                            <ChevronRight size={16} className="text-gray-400" />
-                                                        </div>
-                                                    </div>
-                                                )}
 
-                                                {/* Wifi */}
-                                                <div className="flex items-center justify-between p-4 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors">
-                                                    <span className="text-sm dark:text-white">Sadece Wi-Fi</span>
-                                                    <div
-                                                        onClick={() => setSyncWifiOnly(!syncWifiOnly)}
-                                                        className={`w-11 h-6 rounded-full p-1 cursor-pointer transition-colors duration-300 ${syncWifiOnly ? 'bg-green-500' : 'bg-gray-200 dark:bg-gray-700'}`}
-                                                    >
-                                                        <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform duration-300 ${syncWifiOnly ? 'translate-x-5' : 'translate-x-0'}`} />
+                                        {/* Minimalist Media Toggles */}
+                                        <div className="mx-4 mb-4 p-3 bg-gray-50 dark:bg-white/5 rounded-xl flex items-center justify-between border border-gray-100 dark:border-white/5">
+                                            <span className="text-sm font-medium text-gray-500 dark:text-gray-400">Yedeklenecekler</span>
+
+                                            <div className="flex items-center gap-4">
+                                                {/* Photos Mini Toggle */}
+                                                <div
+                                                    onClick={() => setBackupPhotos(!backupPhotos)}
+                                                    className="flex items-center gap-2 cursor-pointer group"
+                                                >
+                                                    <div className={`w-4 h-4 rounded flex items-center justify-center border transition-colors ${backupPhotos ? 'bg-blue-500 border-blue-500' : 'border-gray-300 dark:border-gray-600'}`}>
+                                                        {backupPhotos && <Check size={10} className="text-white" strokeWidth={4} />}
                                                     </div>
+                                                    <span className={`text-sm ${backupPhotos ? 'text-gray-900 dark:text-white font-medium' : 'text-gray-500'}`}>Fotoğraf</span>
                                                 </div>
 
-                                                {/* Photos */}
-                                                <div className="flex items-center justify-between p-4 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors">
-                                                    <span className="text-sm dark:text-white">Fotoğraflar</span>
-                                                    <div
-                                                        onClick={() => setBackupPhotos(!backupPhotos)}
-                                                        className={`w-11 h-6 rounded-full p-1 cursor-pointer transition-colors duration-300 ${backupPhotos ? 'bg-green-500' : 'bg-gray-200 dark:bg-gray-700'}`}
-                                                    >
-                                                        <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform duration-300 ${backupPhotos ? 'translate-x-5' : 'translate-x-0'}`} />
-                                                    </div>
-                                                </div>
+                                                <div className="w-px h-4 bg-gray-300 dark:bg-white/10" />
 
-                                                {/* Videos */}
-                                                <div className="flex items-center justify-between p-4 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors">
-                                                    <span className="text-sm dark:text-white">Videolar</span>
-                                                    <div
-                                                        onClick={() => setBackupVideos(!backupVideos)}
-                                                        className={`w-11 h-6 rounded-full p-1 cursor-pointer transition-colors duration-300 ${backupVideos ? 'bg-green-500' : 'bg-gray-200 dark:bg-gray-700'}`}
-                                                    >
-                                                        <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform duration-300 ${backupVideos ? 'translate-x-5' : 'translate-x-0'}`} />
+                                                {/* Videos Mini Toggle */}
+                                                <div
+                                                    onClick={() => setBackupVideos(!backupVideos)}
+                                                    className="flex items-center gap-2 cursor-pointer group"
+                                                >
+                                                    <div className={`w-4 h-4 rounded flex items-center justify-center border transition-colors ${backupVideos ? 'bg-blue-500 border-blue-500' : 'border-gray-300 dark:border-gray-600'}`}>
+                                                        {backupVideos && <Check size={10} className="text-white" strokeWidth={4} />}
                                                     </div>
+                                                    <span className={`text-sm ${backupVideos ? 'text-gray-900 dark:text-white font-medium' : 'text-gray-500'}`}>Video</span>
                                                 </div>
-                                            </>
-                                        )}
-                                    </div>
-
-                                    {/* Yedekle Butonu - HER ZAMAN GÖSTER */}
-                                    <div className="mt-4 bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden border border-gray-200/50 dark:border-white/5 shadow-sm mx-1">
-                                        <div
-                                            onClick={(!isManualSyncing && !folderSyncStatus.isRunning) ? handleManualBackup : undefined}
-                                            className={`p-3.5 flex items-center justify-center transition-colors min-h-[50px] ${(!isManualSyncing && !folderSyncStatus.isRunning) ? 'cursor-pointer hover:bg-gray-50 dark:hover:bg-white/5 active:bg-gray-100' : ''}`}
-                                        >
-                                            {(isManualSyncing || folderSyncStatus.isRunning) ? (
-                                                <div className="flex flex-col items-center gap-0.5">
-                                                    <div className="flex items-center gap-2">
-                                                        <Loader2 size={14} className="animate-spin text-gray-500" />
-                                                        <span className="text-sm text-gray-600 dark:text-gray-300 font-medium tracking-tight">Yedekleniyor...</span>
-                                                    </div>
-                                                    <span className="text-[10px] text-gray-400 font-medium">
-                                                        {folderSyncStatus.uploadedFiles} / {folderSyncStatus.totalFiles}
-                                                    </span>
-                                                </div>
-                                            ) : (
-                                                <span className="text-[15px] font-medium text-blue-600 dark:text-blue-500">Yedekle</span>
-                                            )}
+                                            </div>
                                         </div>
-                                    </div>
-                                </div>
-
-
-                                {/* Bilgi Barı */}
-                                <div className="bg-gradient-to-r from-blue-500 to-indigo-600 p-4 rounded-2xl shadow-lg shadow-blue-500/20 text-white flex items-center gap-4">
-                                    <div className="p-3 bg-white/20 backdrop-blur-md rounded-full">
-                                        <Cloud size={24} className="text-white" />
-                                    </div>
-                                    <div>
-                                        <h4 className="font-bold text-lg leading-tight">Bulut Durumu</h4>
-                                        <p className="text-xs text-blue-100 mt-1 font-medium">
-                                            {files.filter(f => f.file_type === 'PHOTO').length} Fotoğraf • {files.filter(f => f.file_type === 'VIDEO').length} Video
-                                        </p>
-                                        <p className="text-[10px] text-blue-200 mt-0.5 opacity-80">
-                                            Tüm verileriniz şifrelenerek saklanmaktadır.
-                                        </p>
-                                    </div>
-                                </div>
-
-                                {/* Çıkış Yap */}
-                                <button
-                                    onClick={() => { setShowSettings(false); handleLogout(); }}
-                                    className="w-full py-3.5 flex items-center justify-center gap-2 text-red-500 hover:text-red-600 font-semibold bg-red-50 dark:bg-red-900/10 hover:bg-red-100 dark:hover:bg-red-900/20 rounded-2xl transition-all active:scale-95"
-                                >
-                                    <LogOut size={20} />
-                                    <span>Oturumu Kapat</span>
-                                </button>
-
-                                <div className="pt-2 text-center text-xs text-gray-400">
-                                    Versiyon 1.0.2 • MobilTools
-                                </div>
+                                    </>
+                                )}
                             </div>
-                        </motion.div >
-                    </>
-                )
-                }
-            </AnimatePresence >
+                        </div>
+
+
+                        {/* Manual Action */}
+                        <div className="mt-4">
+                            <button
+                                onClick={(!isManualSyncing && !folderSyncStatus.isRunning) ? handleManualBackup : undefined}
+                                disabled={isManualSyncing || folderSyncStatus.isRunning}
+                                className={`w-full py-4 text-center rounded-xl font-semibold shadow-sm transition-all active:scale-95 ${(isManualSyncing || folderSyncStatus.isRunning)
+                                    ? 'bg-gray-100 text-gray-400 dark:bg-white/5 shadow-none cursor-not-allowed'
+                                    : 'bg-white dark:bg-[#1C1C1E] text-blue-600 dark:text-blue-500 hover:bg-gray-50 dark:hover:bg-white/5'
+                                    }`}
+                            >
+                                {(isManualSyncing || folderSyncStatus.isRunning) ? (
+                                    <div className="flex items-center justify-center gap-2">
+                                        <Loader2 size={16} className="animate-spin" />
+                                        <span>Yedekleniyor ({folderSyncStatus.uploadedFiles}/{folderSyncStatus.totalFiles})</span>
+                                    </div>
+                                ) : (
+                                    'Şimdi Yedekle'
+                                )}
+                            </button>
+                        </div>
+
+
+                        {/* Logout Button */}
+                        <div className="pt-4">
+                            <button
+                                onClick={() => { setShowSettings(false); handleLogout(); }}
+                                className="w-full bg-red-50 dark:bg-red-900/10 text-red-600 dark:text-red-400 py-3.5 rounded-xl font-semibold hover:bg-red-100 dark:hover:bg-red-900/20 active:scale-95 transition-all flex items-center justify-center gap-2"
+                            >
+                                <LogOut size={18} />
+                                <span>Oturumu Kapat</span>
+                            </button>
+                        </div>
+
+                        <div className="pt-6 pb-2 text-center">
+                            <p className="text-xs text-gray-400 dark:text-gray-600 font-medium">ooCloud v2.1.0 (Build 340)</p>
+                        </div>
+                    </div>
+                </div>
+            )}
 
 
             {/* Bottom Navigation Bar */}
-            < div className="fixed bottom-0 left-0 right-0 bg-white/90 dark:bg-[#1C1C1E]/95 backdrop-blur-xl border-t border-gray-200 dark:border-white/10 pb-6 pt-2 px-2 z-30 shadow-lg" >
+            < div className="fixed bottom-0 left-0 right-0 bg-white/90 dark:bg-[#1C1C1E]/95 backdrop-blur-xl border-t border-gray-200 dark:border-white/10 pb-8 pt-3 px-2 z-30 shadow-lg" >
                 <div className="flex justify-between items-end max-w-md mx-auto">
 
                     {/* Fotoğraflar */}
                     <button
                         onClick={() => setActiveTab('photos')}
-                        className={`flex-1 flex flex-col items-center gap-1 transition-all active:scale-90 ${activeTab === 'photos' ? 'text-blue-500' : 'text-gray-400 dark:text-gray-500'}`}
+                        className={`flex-1 flex flex-col items-center gap-1.5 transition-all active:scale-95 ${activeTab === 'photos' ? 'text-blue-500' : 'text-gray-500 dark:text-gray-400'}`}
                     >
-                        <ImageIcon size={26} strokeWidth={activeTab === 'photos' ? 2.5 : 2} className={activeTab === 'photos' ? "fill-current/10" : ""} />
-                        <span className={`text-[10px] font-medium ${activeTab === 'photos' ? 'font-bold' : ''}`}>Fotoğraflar</span>
+                        <ImageIcon size={28} strokeWidth={activeTab === 'photos' ? 2.5 : 2} className={activeTab === 'photos' ? "fill-current/10" : ""} />
+                        <span className={`text-[11px] font-medium ${activeTab === 'photos' ? 'font-bold' : ''}`}>Fotoğraflar</span>
                     </button>
 
                     {/* Dosyalar */}
                     <button
                         onClick={() => setActiveTab('files')}
-                        className={`flex-1 flex flex-col items-center gap-1 transition-all active:scale-90 ${activeTab === 'files' ? 'text-blue-500' : 'text-gray-400 dark:text-gray-500'}`}
+                        className={`flex-1 flex flex-col items-center gap-1.5 transition-all active:scale-95 ${activeTab === 'files' ? 'text-blue-500' : 'text-gray-500 dark:text-gray-400'}`}
                     >
-                        <Folder size={26} strokeWidth={activeTab === 'files' ? 2.5 : 2} className={activeTab === 'files' ? "fill-current/10" : ""} />
-                        <span className={`text-[10px] font-medium ${activeTab === 'files' ? 'font-bold' : ''}`}>Dosyalar</span>
+                        <Folder size={28} strokeWidth={activeTab === 'files' ? 2.5 : 2} className={activeTab === 'files' ? "fill-current/10" : ""} />
+                        <span className={`text-[11px] font-medium ${activeTab === 'files' ? 'font-bold' : ''}`}>Dosyalar</span>
                     </button>
 
                     {/* Favoriler */}
                     <button
                         onClick={() => setActiveTab('favorites')}
-                        className={`flex-1 flex flex-col items-center gap-1 transition-all active:scale-90 ${activeTab === 'favorites' ? 'text-red-500' : 'text-gray-400 dark:text-gray-500'}`}
+                        className={`flex-1 flex flex-col items-center gap-1.5 transition-all active:scale-95 ${activeTab === 'favorites' ? 'text-red-500' : 'text-gray-500 dark:text-gray-400'}`}
                     >
-                        <Heart size={26} strokeWidth={activeTab === 'favorites' ? 2.5 : 2} className={activeTab === 'favorites' ? "fill-current" : ""} />
-                        <span className={`text-[10px] font-medium ${activeTab === 'favorites' ? 'font-bold' : ''}`}>Favoriler</span>
+                        <Heart size={28} strokeWidth={activeTab === 'favorites' ? 2.5 : 2} className={activeTab === 'favorites' ? "fill-current" : ""} />
+                        <span className={`text-[11px] font-medium ${activeTab === 'favorites' ? 'font-bold' : ''}`}>Favoriler</span>
                     </button>
 
                     {/* Çöp Kutusu */}
                     <button
                         onClick={() => setActiveTab('trash')}
-                        className={`flex-1 flex flex-col items-center gap-1 transition-all active:scale-90 ${activeTab === 'trash' ? 'text-blue-500' : 'text-gray-400 dark:text-gray-500'}`}
+                        className={`flex-1 flex flex-col items-center gap-1.5 transition-all active:scale-95 ${activeTab === 'trash' ? 'text-blue-500' : 'text-gray-500 dark:text-gray-400'}`}
                     >
-                        <Trash2 size={26} strokeWidth={activeTab === 'trash' ? 2.5 : 2} className={activeTab === 'trash' ? "fill-current/10" : ""} />
-                        <span className={`text-[10px] font-medium ${activeTab === 'trash' ? 'font-bold' : ''}`}>Çöp Kutusu</span>
+                        <Trash2 size={28} strokeWidth={activeTab === 'trash' ? 2.5 : 2} className={activeTab === 'trash' ? "fill-current/10" : ""} />
+                        <span className={`text-[11px] font-medium ${activeTab === 'trash' ? 'font-bold' : ''}`}>Çöp Kutusu</span>
                     </button>
 
                     {/* Ayarlar */}
                     <button
-                        onClick={() => setShowSettings(true)}
-                        className={`flex-1 flex flex-col items-center gap-1 transition-all active:scale-90 text-gray-400 dark:text-gray-500 hover:text-blue-500`}
+                        onClick={() => setActiveTab('settings')}
+                        className={`flex-1 flex flex-col items-center gap-1.5 transition-all active:scale-95 ${activeTab === 'settings' ? 'text-blue-500' : 'text-gray-500 dark:text-gray-400'}`}
                     >
-                        <Settings size={26} strokeWidth={2} />
-                        <span className="text-[10px] font-medium">Ayarlar</span>
+                        <Settings size={28} strokeWidth={activeTab === 'settings' ? 2.5 : 2} />
+                        <span className={`text-[11px] font-medium ${activeTab === 'settings' ? 'font-bold' : ''}`}>Ayarlar</span>
                     </button>
                 </div>
             </div >
